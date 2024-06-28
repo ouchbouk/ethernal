@@ -1,2 +1,2 @@
 #!/bin/bash
-forge test --mt testLiquidateableLongPositionInAsset -vvv
+forge test --mt testLossShortPositionInAsset -vvv

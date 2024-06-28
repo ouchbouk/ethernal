@@ -791,18 +791,15 @@ contract EthernalTest is Test {
         priceFeed.setPrice(newPrice);
 
         vm.startPrank(user0);
-        Ethernal.Position memory position = ethernal.getPosition(user0, true);
-        uint borrowFee = ethernal.calculateBorrowingFee(
-            position.size,
-            elapsedTime
-        );
-        uint liquidationFee = ethernal.getLiquidationFee(
-            position.collateral - borrowFee
-        );
 
         ethernal.closePosition(true);
+        Ethernal.Position memory position = ethernal.getPosition(user0, true);
         uint balance = weth.balanceOf(user0);
-        assertEq(liquidationFee, balance);
+        assertEq(0, balance);
+        assertEq(0, position.price);
+        assertEq(0, position.size);
+        assertEq(0, position.collateral);
+        assertEq(0, position.lastTimeUpdated);
     }
 
     function testProfitableShortPositionInAsset() public {
@@ -814,7 +811,6 @@ contract EthernalTest is Test {
         vm.startPrank(user0);
         uint balanceBefore = usdc.balanceOf(user0);
         ethernal.closePosition(false);
-
         uint balanceAfter = usdc.balanceOf(user0);
         vm.stopPrank();
 
@@ -825,6 +821,55 @@ contract EthernalTest is Test {
         assertEq(0, position.collateral);
         assertEq(0, position.lastTimeUpdated);
     }
+
+    function testProfitableShortPositionInIndex() public {
+        testOpenShortPositionInIndex();
+        vm.warp(block.timestamp + 7 days);
+        int newPrice = int(1_000 * USDC_DECIMALS);
+        priceFeed.setPrice(newPrice);
+
+        vm.startPrank(user0);
+        uint balanceBefore = usdc.balanceOf(user0);
+        ethernal.closePosition(false);
+        uint balanceAfter = usdc.balanceOf(user0);
+        vm.stopPrank();
+
+        Ethernal.Position memory position = ethernal.getPosition(user0, false);
+        assertTrue(balanceAfter > balanceBefore);
+        assertEq(0, position.price);
+        assertEq(0, position.size);
+        assertEq(0, position.collateral);
+        assertEq(0, position.lastTimeUpdated);
+    }
+
+    function testLossShortPositionInAsset() public {
+        testOpenShortPositionInAsset();
+        vm.warp(block.timestamp + 7 days);
+        int newPrice = int(4_000 * USDC_DECIMALS);
+        priceFeed.setPrice(newPrice);
+
+        vm.startPrank(user0);
+        ethernal.closePosition(false);
+        vm.stopPrank();
+        Ethernal.Position memory position = ethernal.getPosition(user0, false);
+        uint balance = usdc.balanceOf(user0);
+        assertEq(0, balance);
+        assertEq(0, position.price);
+        assertEq(0, position.size);
+        assertEq(0, position.collateral);
+        assertEq(0, position.lastTimeUpdated);
+    }
+
+    function testLiquidateLongPositionInAsset() public {
+        testOpenLongPositionInAsset();
+        vm.warp(block.timestamp + 7 days);
+        int newPrice = int(1_000 * USDC_DECIMALS);
+        priceFeed.setPrice(newPrice); 
+
+            
+
+    }
+
     function testCalcBorrowFees() public {
         uint borrowAmount = 100 * USDC_DECIMALS;
         uint expectedFee = 10 * USDC_DECIMALS;
