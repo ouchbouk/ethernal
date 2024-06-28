@@ -1,2 +1,2 @@
 #!/bin/bash
-forge test --mt testLossShortPositionInAsset -vvv
+forge test --mt testLiquidateShortPositionInIndex -vvv

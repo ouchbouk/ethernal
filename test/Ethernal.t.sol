@@ -61,6 +61,7 @@ contract EthernalTest is Test {
     address liquidityProvider = makeAddr("liquidityProvider");
     address liquidityProviderOther = makeAddr("liquidityProviderOther");
     address user0 = makeAddr("user0");
+    address user1 = makeAddr("user1");
 
     uint constant USDC_DECIMALS = 10 ** 6;
     uint constant WETH_DECIMALS = 10 ** 18;
@@ -824,7 +825,7 @@ contract EthernalTest is Test {
 
     function testProfitableShortPositionInIndex() public {
         testOpenShortPositionInIndex();
-        vm.warp(block.timestamp + 7 days);
+        vm.warp(block.timestamp + 2 days);
         int newPrice = int(1_000 * USDC_DECIMALS);
         priceFeed.setPrice(newPrice);
 
@@ -862,12 +863,119 @@ contract EthernalTest is Test {
 
     function testLiquidateLongPositionInAsset() public {
         testOpenLongPositionInAsset();
-        vm.warp(block.timestamp + 7 days);
-        int newPrice = int(1_000 * USDC_DECIMALS);
-        priceFeed.setPrice(newPrice); 
+        uint elapsedTime = 7 days;
+        vm.warp(block.timestamp + elapsedTime);
+        int newPrice = int(2_800 * USDC_DECIMALS);
+        priceFeed.setPrice(newPrice);
 
-            
+        Ethernal.Position memory position = ethernal.getPosition(user0, true);
 
+        uint borrowingFee = ethernal.calculateBorrowingFee(
+            position.size,
+            elapsedTime
+        );
+        int loss = ethernal.getPorLInAsset(
+            getPrice(),
+            position.price,
+            position.size
+        );
+
+        uint colMinusFees = position.collateral - borrowingFee - uint(-loss);
+        uint expectedFee = ethernal.getLiquidationFee(colMinusFees);
+
+        vm.startPrank(user1);
+        ethernal.liquidate(user0, true);
+        uint liquidatorBalance = usdc.balanceOf(user1);
+        assertEq(expectedFee, liquidatorBalance);
+    }
+
+    function testLiquidateLongPositionInIndex() public {
+        testOpenLongPositionInIndex();
+        uint elapsedTime = 7 days;
+        vm.warp(block.timestamp + elapsedTime);
+        int newPrice = int(2_800 * USDC_DECIMALS);
+        priceFeed.setPrice(newPrice);
+
+        Ethernal.Position memory position = ethernal.getPosition(user0, true);
+
+        uint borrowingFee = ethernal.calculateBorrowingFee(
+            position.size,
+            elapsedTime
+        );
+        int loss = ethernal.getPorLInAsset(
+            getPrice(),
+            position.price,
+            position.size
+        );
+        uint colMinusFees = position.collateral -
+            divPrice((borrowingFee), getPrice(), 10 ** weth.decimals()) -
+            divPrice((uint(-loss)), getPrice(), 10 ** weth.decimals());
+
+        uint expectedFee = ethernal.getLiquidationFee(colMinusFees);
+
+        vm.startPrank(user1);
+        ethernal.liquidate(user0, true);
+        uint liquidatorBalance = weth.balanceOf(user1);
+        assertEq(expectedFee, liquidatorBalance);
+    }
+
+    function testLiquidateShortPositionInAsset() public {
+        testOpenShortPositionInAsset();
+        uint elapsedTime = 7 days;
+        vm.warp(block.timestamp + elapsedTime);
+        int newPrice = int(3_100 * USDC_DECIMALS);
+        priceFeed.setPrice(newPrice);
+
+        Ethernal.Position memory position = ethernal.getPosition(user0, false);
+
+        uint borrowingFee = ethernal.calculateBorrowingFee(
+            position.size,
+            elapsedTime
+        );
+        int loss = ethernal.getPorLInAsset(
+            getPrice(),
+            position.price,
+            position.size
+        );
+        uint colMinusFees = position.collateral - borrowingFee - uint(loss);
+
+        uint expectedFee = ethernal.getLiquidationFee(colMinusFees);
+        vm.startPrank(user1);
+        ethernal.liquidate(user0, false);
+        uint liquidatorBalance = usdc.balanceOf(user1);
+        assertEq(expectedFee, liquidatorBalance);
+    }
+
+    function testLiquidateShortPositionInIndex() public {
+        testOpenShortPositionInIndex();
+        uint elapsedTime = 7 days;
+        vm.warp(block.timestamp + elapsedTime);
+        int newPrice = int(3_100 * USDC_DECIMALS);
+        priceFeed.setPrice(newPrice);
+
+        Ethernal.Position memory position = ethernal.getPosition(user0, false);
+
+        uint borrowingFee = ethernal.calculateBorrowingFee(
+            position.size,
+            elapsedTime
+        );
+        int loss = ethernal.getPorLInAsset(
+            getPrice(),
+            position.price,
+            position.size
+        );
+        uint colMinusFees = position.collateral -
+            divPrice(
+                (borrowingFee + uint(loss)),
+                getPrice(),
+                10 ** weth.decimals()
+            );
+
+        uint expectedFee = ethernal.getLiquidationFee(colMinusFees);
+        vm.startPrank(user1);
+        ethernal.liquidate(user0, false);
+        uint liquidatorBalance = weth.balanceOf(user1);
+        assertEq(expectedFee, liquidatorBalance);
     }
 
     function testCalcBorrowFees() public {
@@ -888,5 +996,13 @@ contract EthernalTest is Test {
         uint256 price
     ) internal view returns (uint256) {
         return (amount * price) / 10 ** weth.decimals();
+    }
+
+    function divPrice(
+        uint n,
+        uint price,
+        uint toScale
+    ) internal pure returns (uint) {
+        return (n * toScale) / price;
     }
 }

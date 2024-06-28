@@ -115,7 +115,7 @@ contract Ethernal is ERC20 {
         }
 
         if (amount < minAmount) revert Slippage();
-        if (!isValidateWithdrawal(tokenOut, amount)) revert NotEnoughReserves();
+        if (!_isValidWithdrawal(tokenOut, amount)) revert NotEnoughReserves();
         // what if no m0ny?
         _transferTokensOut(tokenOut, msg.sender, amount);
         _burn(msg.sender, lpAmount);
@@ -123,7 +123,7 @@ contract Ethernal is ERC20 {
         updateLiquidity(tokenOut, -int(amount));
     }
 
-    function isValidateWithdrawal(
+    function _isValidWithdrawal(
         address token,
         uint amount
     ) internal view returns (bool) {
@@ -168,8 +168,7 @@ contract Ethernal is ERC20 {
             position.colInIndex = collateralToken == indexToken;
             position.lastTimeUpdated = block.timestamp;
         } else {
-            accrueBorrowingFees(msg.sender, isLong);
-            _accrueLoss(msg.sender, isLong);
+            accrueAccount(msg.sender, isLong);
         }
 
         amount < 0
@@ -239,22 +238,29 @@ contract Ethernal is ERC20 {
         }
     }
 
-    function accrueBorrowingFees(address account, bool isLong) internal {
-        Position memory position = getPosition(account, isLong);
+    function _accrueBorrowingFees(address account, bool isLong) internal {
+        Position memory position_ = getPosition(account, isLong);
         if (
-            position.lastTimeUpdated == 0 ||
-            position.lastTimeUpdated == block.timestamp
+            position_.lastTimeUpdated == 0 ||
+            position_.lastTimeUpdated == block.timestamp
         ) return;
 
-        uint elapsedTime = block.timestamp - position.lastTimeUpdated;
+        uint elapsedTime = block.timestamp - position_.lastTimeUpdated;
 
-        uint borrowingFees = calculateBorrowingFee(position.size, elapsedTime);
+        uint borrowingFees = calculateBorrowingFee(position_.size, elapsedTime);
 
-        if (position.collateral < borrowingFees) {
-            _resetPositionAndUpdateSize(
-                _getPositionStorage(account, isLong),
-                isLong
+        Position storage position = _getPosition(account, isLong);
+
+        if (position.colInIndex) {
+            borrowingFees = _divPrice(
+                borrowingFees,
+                getPrice(),
+                10 ** ERC20(indexToken).decimals()
             );
+        }
+
+        if (position_.collateral < borrowingFees) {
+            _resetPositionAndUpdateSize(position, isLong);
         } else {
             position.collateral -= borrowingFees;
         }
@@ -265,13 +271,10 @@ contract Ethernal is ERC20 {
     }
 
     function closePosition(bool isLong) public {
-        Position storage position = _getPositionStorage(msg.sender, isLong);
-
-        accrueBorrowingFees(msg.sender, isLong);
-        _accrueLoss(msg.sender, isLong);
+        Position storage position = _getPosition(msg.sender, isLong);
+        accrueAccount(msg.sender, isLong);
 
         if (position.collateral == 0) return;
-
         if (isLiquidateable(msg.sender, isLong)) {
             _liquidate(msg.sender, isLong);
             return;
@@ -316,7 +319,7 @@ contract Ethernal is ERC20 {
                 } else {
                     total += collateral;
                 }
-                console.log("Total ---> ", total);
+                console.log("total --> ", total);
                 _transferTokensOut(asset, msg.sender, total);
             }
             _resetPositionAndUpdateSize(position, isLong);
@@ -335,19 +338,27 @@ contract Ethernal is ERC20 {
         return borrowFeeScaled / BORROW_FEE_SCALE;
     }
 
+    function accrueAccount(address account, bool isLong) public {
+        _accrueBorrowingFees(account, isLong);
+        _accrueLoss(account, isLong);
+    }
 
-
+    function liquidate(address account, bool isLong) public {
+        accrueAccount(account, isLong);
+        _liquidate(account, isLong);
+    }
 
     function _liquidate(address account, bool isLong) internal {
-        bool isLiquidateable_ = isLiquidateable(msg.sender, isLong);
+        Position storage position = _getPosition(account, isLong);
+        if (position.collateral == 0) return;
+
+        bool isLiquidateable_ = isLiquidateable(account, isLong);
         if (!isLiquidateable_) revert NotLiquidateable();
 
-        Position storage position = _getPositionStorage(account, isLong);
         // if size is usdc and price normally has 6 decimals
         // this needs to be accustomed to other decimals too;
 
         uint liquidatorFee = getLiquidationFee(position.collateral);
-
         position.collateral -= liquidatorFee;
 
         _transferTokensOut(
@@ -382,7 +393,9 @@ contract Ethernal is ERC20 {
             10 ** ERC20(indexToken).decimals()
         );
 
-        return (priceChange * int(sizeInIndex)) / int(SCALE_FACTOR);
+        return
+            (priceChange * int(sizeInIndex)) /
+            int(10 ** ERC20(indexToken).decimals());
     }
 
     function _resetPositionAndUpdateSize(
@@ -403,18 +416,21 @@ contract Ethernal is ERC20 {
         bool isLong
     ) public view returns (bool) {
         Position memory position = getPosition(account, isLong);
-
         return
             getLeverage(
                 position.colInIndex
-                    ? _mulPrice(position.collateral, getPrice(), position.price)
+                    ? _mulPrice(
+                        position.collateral,
+                        position.price,
+                        10 ** ERC20(indexToken).decimals()
+                    )
                     : position.collateral,
                 position.size
             ) > MAX_LEVERAGE;
     }
 
     function _accrueLoss(address account, bool isLong) internal {
-        Position storage position = _getPositionStorage(account, isLong);
+        Position storage position = _getPosition(account, isLong);
         Position memory position_ = position;
 
         if (position_.collateral == 0) return;
@@ -435,7 +451,6 @@ contract Ethernal is ERC20 {
                     10 ** ERC20(indexToken).decimals()
                 );
             }
-
             if (position_.collateral >= loss) {
                 longPositions[account].collateral -= loss;
             } else {
@@ -509,7 +524,7 @@ contract Ethernal is ERC20 {
         return isLong ? longPositions[account] : shortPositions[account];
     }
 
-    function _getPositionStorage(
+    function _getPosition(
         address account,
         bool isLong
     ) internal view returns (Position storage) {
