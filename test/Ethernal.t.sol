@@ -5,7 +5,7 @@ import "forge-std/Test.sol";
 import "forge-std/console.sol";
 import {Ethernal} from "../src/Ethernal.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {IPriceFeed} from "../src/IPrice.sol";
+import {IPriceFeed} from "../src/interfaces/IPrice.sol";
 
 contract USDC is ERC20 {
     constructor() ERC20("US Dollar Coin", "USDC") {}

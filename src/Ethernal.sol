@@ -5,9 +5,10 @@ import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.so
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IPriceFeed} from "./IPrice.sol";
+import {IPriceFeed} from "./interfaces/IPrice.sol";
+import {IEthernal} from "./interfaces/IEthernal.sol";
 
-import "forge-std/console.sol";
+// import "forge-std/console.sol";
 
 error InvalidLeverage();
 error NotEnoughAssets();
@@ -18,16 +19,8 @@ error UnsupportedToken();
 error UndesirableLpAmount();
 error NotEnoughReserves();
 error Slippage();
-// events?
-contract Ethernal is ERC20 {
-    struct Position {
-        uint256 collateral;
-        bool colInIndex;
-        uint256 size;
-        uint price;
-        uint lastTimeUpdated;
-    }
 
+contract Ethernal is IEthernal, ERC20 {
     uint256 totalAssetLiquidity;
     uint256 totalIndexLiquidity;
 
@@ -76,11 +69,7 @@ contract Ethernal is ERC20 {
     ) external onlySupportedTokens(token) {
         _transferTokensIn(token, msg.sender, amount);
         if (token == indexToken) {
-            amount = _mulPrice(
-                amount,
-                getPrice(),
-                10 ** ERC20(token).decimals()
-            );
+            amount = _mulPrice(amount, getPrice());
         }
 
         uint mintAmount = previewDeposit(amount);
@@ -88,10 +77,10 @@ contract Ethernal is ERC20 {
         if (mintAmount < minLp) revert UndesirableLpAmount();
         _mint(msg.sender, mintAmount);
 
-        updateLiquidity(token, int(amount));
+        _updateLiquidity(token, int(amount));
     }
 
-    function updateLiquidity(address token, int256 amount) internal {
+    function _updateLiquidity(address token, int256 amount) internal {
         if (token == indexToken) {
             amount < 0
                 ? totalIndexLiquidity -= uint256(-amount)
@@ -111,7 +100,7 @@ contract Ethernal is ERC20 {
         uint amount = previewRedeem(lpAmount);
         if (tokenOut == indexToken) {
             uint256 price = getPrice();
-            amount = _divPrice(amount, price, ERC20(indexToken).decimals());
+            amount = _divPrice(amount, price);
         }
 
         if (amount < minAmount) revert Slippage();
@@ -120,7 +109,7 @@ contract Ethernal is ERC20 {
         _transferTokensOut(tokenOut, msg.sender, amount);
         _burn(msg.sender, lpAmount);
 
-        updateLiquidity(tokenOut, -int(amount));
+        _updateLiquidity(tokenOut, -int(amount));
     }
 
     function _isValidWithdrawal(
@@ -179,18 +168,14 @@ contract Ethernal is ERC20 {
 
         uint leverage = getLeverage(
             position.colInIndex
-                ? _mulPrice(
-                    position.collateral,
-                    getPrice(),
-                    10 ** ERC20(indexToken).decimals()
-                )
+                ? _mulPrice(position.collateral, getPrice())
                 : position.collateral,
             position.size
         );
 
         if (!isValidLeverage(leverage)) revert InvalidLeverage();
 
-        if (!isEnoughAssets(position.size, position.colInIndex))
+        if (!_isEnoughAssets(position.size, position.colInIndex))
             revert NotEnoughAssets();
 
         if (size > 0) {
@@ -252,11 +237,7 @@ contract Ethernal is ERC20 {
         Position storage position = _getPosition(account, isLong);
 
         if (position.colInIndex) {
-            borrowingFees = _divPrice(
-                borrowingFees,
-                getPrice(),
-                10 ** ERC20(indexToken).decimals()
-            );
+            borrowingFees = _divPrice(borrowingFees, getPrice());
         }
 
         if (position_.collateral < borrowingFees) {
@@ -289,20 +270,12 @@ contract Ethernal is ERC20 {
             uint collateral = position.collateral;
             bool colInIndex = position.colInIndex;
             if (isLong) {
-                uint profitInIndex = _divPrice(
-                    uint(profit),
-                    getPrice(),
-                    10 ** ERC20(indexToken).decimals()
-                );
+                uint profitInIndex = _divPrice(uint(profit), getPrice());
                 total += profitInIndex;
                 if (colInIndex) {
                     total += collateral;
                 } else {
-                    collateral = _divPrice(
-                        collateral,
-                        getPrice(),
-                        10 ** ERC20(indexToken).decimals()
-                    );
+                    collateral = _divPrice(collateral, getPrice());
 
                     total += collateral;
                 }
@@ -311,15 +284,10 @@ contract Ethernal is ERC20 {
                 total += uint(-profit);
 
                 if (colInIndex) {
-                    total += _mulPrice(
-                        collateral,
-                        getPrice(),
-                        10 ** ERC20(indexToken).decimals()
-                    );
+                    total += _mulPrice(collateral, getPrice());
                 } else {
                     total += collateral;
                 }
-                console.log("total --> ", total);
                 _transferTokensOut(asset, msg.sender, total);
             }
             _resetPositionAndUpdateSize(position, isLong);
@@ -387,11 +355,7 @@ contract Ethernal is ERC20 {
     ) public view returns (int256) {
         int priceChange = int(currentPrice) - int(positionPrice);
 
-        uint sizeInIndex = _divPrice(
-            size,
-            positionPrice,
-            10 ** ERC20(indexToken).decimals()
-        );
+        uint sizeInIndex = _divPrice(size, positionPrice);
 
         return
             (priceChange * int(sizeInIndex)) /
@@ -419,11 +383,7 @@ contract Ethernal is ERC20 {
         return
             getLeverage(
                 position.colInIndex
-                    ? _mulPrice(
-                        position.collateral,
-                        position.price,
-                        10 ** ERC20(indexToken).decimals()
-                    )
+                    ? _mulPrice(position.collateral, position.price)
                     : position.collateral,
                 position.size
             ) > MAX_LEVERAGE;
@@ -445,11 +405,7 @@ contract Ethernal is ERC20 {
             uint loss = uint(-potentialLoss);
 
             if (position_.colInIndex) {
-                loss = _divPrice(
-                    loss,
-                    getPrice(),
-                    10 ** ERC20(indexToken).decimals()
-                );
+                loss = _divPrice(loss, getPrice());
             }
             if (position_.collateral >= loss) {
                 longPositions[account].collateral -= loss;
@@ -460,11 +416,7 @@ contract Ethernal is ERC20 {
             uint loss = uint(potentialLoss);
 
             if (position_.colInIndex) {
-                loss = _divPrice(
-                    loss,
-                    getPrice(),
-                    10 ** ERC20(indexToken).decimals()
-                );
+                loss = _divPrice(loss, getPrice());
             }
 
             if (position_.collateral >= loss) {
@@ -487,34 +439,24 @@ contract Ethernal is ERC20 {
         return leverage <= MAX_LEVERAGE;
     }
 
-    function isEnoughAssets(
+    function _isEnoughAssets(
         uint256 size,
         bool colInIndex
-    ) public view returns (bool) {
+    ) internal view returns (bool) {
         uint256 totalAssets_ = totalAssets();
 
         uint256 availableAssets = (totalAssets_ / MAX_BASIS_POINTS) *
             MAX_UTILIZATION;
 
         if (colInIndex) {
-            size = _mulPrice(
-                size,
-                getPrice(),
-                10 ** ERC20(indexToken).decimals()
-            );
+            size = _mulPrice(size, getPrice());
         }
 
         return size + longOpenInterest + shortOpenInterest <= availableAssets;
     }
 
     function totalAssets() public view returns (uint256) {
-        return
-            totalAssetLiquidity +
-            _mulPrice(
-                totalIndexLiquidity,
-                getPrice(),
-                10 ** ERC20(indexToken).decimals()
-            );
+        return totalAssetLiquidity + _mulPrice(totalIndexLiquidity, getPrice());
     }
 
     function getPosition(
@@ -539,18 +481,13 @@ contract Ethernal is ERC20 {
 
     function _mulPrice(
         uint256 amount,
-        uint256 price,
-        uint256 assetDecimals
-    ) internal pure returns (uint256) {
-        return (amount * price) / assetDecimals;
+        uint256 price
+    ) internal view returns (uint256) {
+        return (amount * price) / 10 ** ERC20(indexToken).decimals();
     }
 
-    function _divPrice(
-        uint n,
-        uint price,
-        uint toScale
-    ) internal pure returns (uint) {
-        return (n * toScale) / price;
+    function _divPrice(uint n, uint price) internal view returns (uint) {
+        return (n * 10 ** ERC20(indexToken).decimals()) / price;
     }
 
     function _transferTokensIn(
