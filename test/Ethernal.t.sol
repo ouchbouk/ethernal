@@ -74,11 +74,12 @@ contract EthernalTest is Test {
         ethernal = new Ethernal(
             address(usdc),
             address(weth),
-            address(priceFeed)
+            address(priceFeed),
+            1_000
         );
     }
 
-    modifier provideLiquidityUSDC() {
+    modifier provideLiquidityInAsset() {
         uint liquidity = 100_000 * USDC_DECIMALS;
         mintUSDC(liquidityProvider, liquidity);
         vm.startPrank(liquidityProvider);
@@ -86,6 +87,8 @@ contract EthernalTest is Test {
         usdc.approve(address(ethernal), providerBalance);
         ethernal.addLiquidity(address(usdc), providerBalance, 0);
         assertEq(providerBalance, ethernal.balanceOf(liquidityProvider));
+        assertEq(liquidity, usdc.balanceOf(address(ethernal)));
+        assertEq(liquidity, ethernal.totalAssetLiquidity());
         _;
     }
 
@@ -97,6 +100,7 @@ contract EthernalTest is Test {
         usdc.approve(address(ethernal), providerBalance);
         ethernal.addLiquidity(address(usdc), providerBalance, 0);
         assertEq(providerBalance, ethernal.balanceOf(liquidityProvider));
+        assertEq(liquidity, usdc.balanceOf(address(ethernal)));
 
         liquidity = 1000 ether;
         weth.mint(liquidityProviderOther, liquidity);
@@ -107,6 +111,7 @@ contract EthernalTest is Test {
         uint liquidityInUsdc = (liquidity * price) / WETH_DECIMALS;
         ethernal.addLiquidity(address(weth), liquidity, 0);
         assertEq(liquidityInUsdc, ethernal.balanceOf(liquidityProviderOther));
+        assertEq(liquidity, weth.balanceOf(address(ethernal)));
         _;
     }
 
@@ -118,7 +123,7 @@ contract EthernalTest is Test {
         weth.mint(account, value);
     }
 
-    function testProvideLiquidity() public {
+    function testProvideLiquidityInAsset() public {
         uint liquidity = 100_000 * USDC_DECIMALS;
         mintUSDC(liquidityProvider, liquidity);
         vm.startPrank(liquidityProvider);
@@ -127,6 +132,8 @@ contract EthernalTest is Test {
         ethernal.addLiquidity(address(usdc), providerBalance, 0);
         vm.stopPrank();
         assertEq(providerBalance, ethernal.balanceOf(liquidityProvider));
+        assertEq(liquidity, usdc.balanceOf(address(ethernal)));
+        assertEq(liquidity, ethernal.totalAssetLiquidity());
 
         // Other Liquidity provider
         uint liquidityOther = liquidity / 2;
@@ -136,12 +143,14 @@ contract EthernalTest is Test {
         usdc.approve(address(ethernal), providerBalance);
         ethernal.addLiquidity(address(usdc), providerBalance, 0);
         assertEq(providerBalance, ethernal.balanceOf(liquidityProviderOther));
+        assertEq(liquidityOther + liquidity, usdc.balanceOf(address(ethernal)));
+        assertEq(liquidityOther + liquidity, ethernal.totalAssetLiquidity());
         vm.stopPrank();
     }
 
-    function testRemoveLiquidity() public {
+    function testRemoveLiquidityInAsset() public {
         // provide liquidity
-        testProvideLiquidity();
+        testProvideLiquidityInAsset();
         uint expectedLiquidity = 100_000 * USDC_DECIMALS;
 
         vm.startPrank(liquidityProvider);
@@ -158,10 +167,12 @@ contract EthernalTest is Test {
 
         assertEq(expectedLiquidity / 2, usdc.balanceOf(liquidityProviderOther));
         assertEq(0, ethernal.totalSupply());
+        assertEq(0, usdc.balanceOf(address(ethernal)));
+        assertEq(0, ethernal.totalAssetLiquidity());
     }
 
-    function testProvideLiquidityBothTokens() public provideLiquidityUSDC {
-        uint liquidity = 100 ether;
+    function testProvideLiquidityBothTokens() public provideLiquidityInAsset {
+        uint liquidity = 1000 ether;
         weth.mint(liquidityProviderOther, liquidity);
         vm.startPrank(liquidityProviderOther);
         weth.approve(address(ethernal), liquidity);
@@ -171,7 +182,28 @@ contract EthernalTest is Test {
         ethernal.addLiquidity(address(weth), liquidity, 0);
 
         assertEq(liquidityInUsdc, ethernal.balanceOf(liquidityProviderOther));
+        assertEq(liquidity, ethernal.totalIndexLiquidity());
         vm.stopPrank();
+    }
+
+    function testRemoveLiquidityInTokeOtherThanDeposited() public {
+        testProvideLiquidityBothTokens();
+
+        uint expectedLiquidity = 20 ether;
+        uint removedLiquidityInAsset = mulPrice(expectedLiquidity, getPrice());
+        uint lpToWithdraw = ethernal.previewDeposit(removedLiquidityInAsset);
+        uint lpBalanceBefore = ethernal.balanceOf(liquidityProvider);
+        vm.startPrank(liquidityProvider);
+        ethernal.removeLiquidity(
+            address(weth),
+            lpToWithdraw,
+            expectedLiquidity
+        );
+        assertEq(
+            lpBalanceBefore - lpToWithdraw,
+            ethernal.balanceOf(liquidityProvider)
+        );
+        assertEq(expectedLiquidity, weth.balanceOf(liquidityProvider));
     }
 
     function testOpenLongPositionInAsset() public provideLiquidityBoth {
@@ -180,16 +212,23 @@ contract EthernalTest is Test {
         uint fee = ethernal.getPositionFee(uint(size));
         uint colPlusFee = uint(collateral) + fee;
         mintUSDC(user0, colPlusFee);
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint balanceBefore = usdc.balanceOf(address(ethernal));
         vm.startPrank(user0);
         usdc.approve(address(ethernal), colPlusFee);
+
         ethernal.updatePosition(address(usdc), collateral, size, true);
 
+        uint balanceAfter = usdc.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
         Ethernal.Position memory position = ethernal.getPosition(user0, true);
         assertEq(uint(collateral), position.collateral);
         assertEq(false, position.colInIndex);
         assertEq(uint(size), position.size);
         assertEq(block.timestamp, position.lastTimeUpdated);
         assertEq(getPrice(), position.price);
+        assertEq(longOpenInterestBefore + uint(size), longOpenInterestAfter);
+        assertEq(balanceBefore + uint(colPlusFee), balanceAfter);
     }
 
     function testIncreaseColLongPositionInAsset() public {
@@ -201,13 +240,17 @@ contract EthernalTest is Test {
         mintUSDC(user0, colPlusFee);
         vm.startPrank(user0);
         usdc.approve(address(ethernal), colPlusFee);
-
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint balanceBefore = usdc.balanceOf(address(ethernal));
         Ethernal.Position memory positionBefore = ethernal.getPosition(
             user0,
             true
         );
 
         ethernal.updatePosition(address(usdc), collateral, size, true);
+
+        uint balanceAfter = usdc.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
             true
@@ -220,7 +263,8 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size + uint(size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
-        // @audit check if ethernal has received
+        assertEq(longOpenInterestBefore + uint(size), longOpenInterestAfter);
+        assertEq(balanceBefore + uint(colPlusFee), balanceAfter);
     }
 
     function testDecreaseColLongPositionInAsset() public {
@@ -233,8 +277,13 @@ contract EthernalTest is Test {
             user0,
             true
         );
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint balanceBefore = usdc.balanceOf(address(ethernal));
 
         ethernal.updatePosition(address(usdc), collateral, size, true);
+
+        uint balanceAfter = usdc.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
             true
@@ -247,6 +296,8 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size + uint(size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(longOpenInterestBefore + uint(size), longOpenInterestAfter);
+        assertEq(balanceBefore - uint(-collateral), balanceAfter);
     }
 
     function testIncreaseSizeLongPositionInAsset() public {
@@ -263,9 +314,12 @@ contract EthernalTest is Test {
             user0,
             true
         );
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint balanceBefore = usdc.balanceOf(address(ethernal));
 
         ethernal.updatePosition(address(usdc), collateral, size, true);
-
+        uint balanceAfter = usdc.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
             true
@@ -276,6 +330,8 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size + uint(size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(longOpenInterestBefore + uint(size), longOpenInterestAfter);
+        assertEq(balanceBefore + uint(fee), balanceAfter);
     }
 
     function testDecreaseSizeLongPositionInAsset() public {
@@ -292,37 +348,49 @@ contract EthernalTest is Test {
             user0,
             true
         );
-
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint balanceBefore = usdc.balanceOf(address(ethernal));
         ethernal.updatePosition(address(usdc), collateral, size, true);
 
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
             true
         );
-
+        uint balanceAfter = usdc.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
         assertEq(positionBefore.collateral, positionAfter.collateral);
         assertEq(false, positionAfter.colInIndex);
         assertEq(positionBefore.size - uint(-size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(longOpenInterestBefore - uint(-size), longOpenInterestAfter);
+        assertEq(balanceBefore + fee, balanceAfter);
     }
 
     function testOpenLongPositionInIndex() public provideLiquidityBoth {
         int collateral = 1 ether;
         int size = int(mulPrice(10 ether, getPrice()));
         uint fee = ethernal.getPositionFee(uint(size));
-        uint colPlusFee = uint(collateral) + fee;
+        uint colPlusFee = uint(collateral) +
+            divPrice(fee, getPrice(), 10 ** 18);
         mintWeth(user0, colPlusFee);
         vm.startPrank(user0);
         weth.approve(address(ethernal), colPlusFee);
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint balanceBefore = weth.balanceOf(address(ethernal));
+
         ethernal.updatePosition(address(weth), collateral, size, true);
 
+        uint balanceAfter = weth.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
         Ethernal.Position memory position = ethernal.getPosition(user0, true);
         assertEq(uint(collateral), position.collateral);
         assertEq(true, position.colInIndex);
         assertEq(uint(size), position.size);
         assertEq(block.timestamp, position.lastTimeUpdated);
         assertEq(getPrice(), position.price);
+        assertEq(longOpenInterestBefore + uint(size), longOpenInterestAfter);
+        assertEq(balanceBefore + colPlusFee, balanceAfter);
     }
     function testIncreaseColLongPositionInIndex() public {
         testOpenLongPositionInIndex();
@@ -341,7 +409,13 @@ contract EthernalTest is Test {
             true
         );
 
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint balanceBefore = weth.balanceOf(address(ethernal));
+
         ethernal.updatePosition(address(weth), collateral, size, true);
+
+        uint balanceAfter = weth.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
 
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
@@ -355,6 +429,8 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size + uint(size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(longOpenInterestBefore, longOpenInterestAfter);
+        assertEq(balanceBefore + uint(collateral), balanceAfter);
     }
 
     function testDecreaseColLongPositionInIndex() public {
@@ -370,7 +446,13 @@ contract EthernalTest is Test {
             true
         );
 
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint balanceBefore = weth.balanceOf(address(ethernal));
+
         ethernal.updatePosition(address(weth), collateral, size, true);
+
+        uint balanceAfter = weth.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
 
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
@@ -384,6 +466,8 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size, positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(longOpenInterestBefore, longOpenInterestAfter);
+        assertEq(balanceBefore - uint(-collateral), balanceAfter);
     }
 
     function testIncreaseSizeLongPositionInIndex() public {
@@ -391,7 +475,11 @@ contract EthernalTest is Test {
 
         int collateral = 0;
         int size = int(mulPrice(1 ether, getPrice()));
-        uint fee = ethernal.getPositionFee(uint(size));
+        uint fee = divPrice(
+            ethernal.getPositionFee(uint(size)),
+            getPrice(),
+            10 ** 18
+        );
         mintWeth(user0, uint(fee));
 
         vm.startPrank(user0);
@@ -403,8 +491,13 @@ contract EthernalTest is Test {
             true
         );
 
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint balanceBefore = weth.balanceOf(address(ethernal));
+
         ethernal.updatePosition(address(weth), collateral, size, true);
 
+        uint balanceAfter = weth.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
             true
@@ -414,6 +507,8 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size + uint(size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(longOpenInterestBefore + uint(size), longOpenInterestAfter);
+        assertEq(balanceBefore + fee, balanceAfter);
     }
 
     function testDecreaseSizeLongPositionInIndex() public {
@@ -421,7 +516,11 @@ contract EthernalTest is Test {
 
         int collateral = 0;
         int size = -int(mulPrice(1 ether, getPrice()));
-        uint fee = ethernal.getPositionFee(uint(-size));
+        uint fee = divPrice(
+            ethernal.getPositionFee(uint(-size)),
+            getPrice(),
+            10 ** 18
+        );
         mintWeth(user0, uint(fee));
 
         vm.startPrank(user0);
@@ -433,8 +532,13 @@ contract EthernalTest is Test {
             true
         );
 
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint balanceBefore = weth.balanceOf(address(ethernal));
+
         ethernal.updatePosition(address(weth), collateral, size, true);
 
+        uint balanceAfter = weth.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
             true
@@ -444,6 +548,8 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size - uint(-size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(longOpenInterestBefore - uint(-size), longOpenInterestAfter);
+        assertEq(balanceBefore + fee, balanceAfter);
     }
 
     function testOpenShortPositionInAsset() public provideLiquidityBoth {
@@ -454,7 +560,14 @@ contract EthernalTest is Test {
         mintUSDC(user0, colPlusFee);
         vm.startPrank(user0);
         usdc.approve(address(ethernal), colPlusFee);
+
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint balanceBefore = usdc.balanceOf(address(ethernal));
+
         ethernal.updatePosition(address(usdc), collateral, size, false);
+
+        uint balanceAfter = usdc.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
 
         Ethernal.Position memory position = ethernal.getPosition(user0, false);
         assertEq(uint(collateral), position.collateral);
@@ -462,6 +575,8 @@ contract EthernalTest is Test {
         assertEq(uint(size), position.size);
         assertEq(block.timestamp, position.lastTimeUpdated);
         assertEq(getPrice(), position.price);
+        assertEq(shortOpenInterestBefore + uint(size), shortOpenInterestAfter);
+        assertEq(balanceBefore + colPlusFee, balanceAfter);
     }
 
     function testIncreaseColShortPositionInAsset() public {
@@ -479,7 +594,14 @@ contract EthernalTest is Test {
             false
         );
 
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint balanceBefore = usdc.balanceOf(address(ethernal));
+
         ethernal.updatePosition(address(usdc), collateral, size, false);
+
+        uint balanceAfter = usdc.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
+
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
             false
@@ -492,7 +614,8 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size + uint(size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
-        // @audit check if ethernal has received
+        assertEq(shortOpenInterestBefore, shortOpenInterestAfter);
+        assertEq(balanceBefore + colPlusFee, balanceAfter);
     }
 
     function testDecreaseColShortPositionInAsset() public {
@@ -506,19 +629,28 @@ contract EthernalTest is Test {
             false
         );
 
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint balanceBefore = usdc.balanceOf(address(ethernal));
+
         ethernal.updatePosition(address(usdc), collateral, size, false);
+
+        uint balanceAfter = usdc.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
+
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
             false
         );
         assertEq(
-            int(positionBefore.collateral) + collateral,
-            int(positionAfter.collateral)
+            positionBefore.collateral - uint(-collateral),
+            positionAfter.collateral
         );
         assertEq(false, positionAfter.colInIndex);
         assertEq(positionBefore.size + uint(size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(shortOpenInterestBefore, shortOpenInterestAfter);
+        assertEq(balanceBefore - uint(-collateral), balanceAfter);
     }
 
     function testIncreaseSizeShortPositionInAsset() public {
@@ -536,8 +668,13 @@ contract EthernalTest is Test {
             false
         );
 
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint balanceBefore = usdc.balanceOf(address(ethernal));
+
         ethernal.updatePosition(address(usdc), collateral, size, false);
 
+        uint balanceAfter = usdc.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
             false
@@ -548,6 +685,8 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size + uint(size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(shortOpenInterestBefore + uint(size), shortOpenInterestAfter);
+        assertEq(balanceBefore + fee, balanceAfter);
     }
 
     function testDecreaseSizeShortPositionInAsset() public {
@@ -565,7 +704,13 @@ contract EthernalTest is Test {
             false
         );
 
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint balanceBefore = usdc.balanceOf(address(ethernal));
+
         ethernal.updatePosition(address(usdc), collateral, size, false);
+
+        uint balanceAfter = usdc.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
 
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
@@ -577,17 +722,26 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size - uint(-size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(shortOpenInterestBefore - uint(-size), shortOpenInterestAfter);
+        assertEq(balanceBefore + fee, balanceAfter);
     }
 
     function testOpenShortPositionInIndex() public provideLiquidityBoth {
         int collateral = 1 ether;
         int size = int(mulPrice(10 ether, getPrice()));
         uint fee = ethernal.getPositionFee(uint(size));
-        uint colPlusFee = uint(collateral) + fee;
+        uint colPlusFee = uint(collateral) +
+            divPrice(fee, getPrice(), 10 ** 18);
         mintWeth(user0, colPlusFee);
         vm.startPrank(user0);
         weth.approve(address(ethernal), colPlusFee);
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint balanceBefore = weth.balanceOf(address(ethernal));
+
         ethernal.updatePosition(address(weth), collateral, size, false);
+
+        uint balanceAfter = weth.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
 
         Ethernal.Position memory position = ethernal.getPosition(user0, false);
         assertEq(uint(collateral), position.collateral);
@@ -595,6 +749,8 @@ contract EthernalTest is Test {
         assertEq(uint(size), position.size);
         assertEq(block.timestamp, position.lastTimeUpdated);
         assertEq(getPrice(), position.price);
+        assertEq(shortOpenInterestBefore + uint(size), shortOpenInterestAfter);
+        assertEq(balanceBefore + colPlusFee, balanceAfter);
     }
 
     function testIncreaseColShortPositionInIndex() public {
@@ -613,9 +769,13 @@ contract EthernalTest is Test {
             user0,
             false
         );
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint balanceBefore = weth.balanceOf(address(ethernal));
 
         ethernal.updatePosition(address(weth), collateral, size, false);
 
+        uint balanceAfter = weth.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
             false
@@ -625,9 +785,11 @@ contract EthernalTest is Test {
             positionAfter.collateral
         );
         assertEq(true, positionAfter.colInIndex);
-        assertEq(positionBefore.size + uint(size), positionAfter.size);
+        assertEq(positionBefore.size, positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(shortOpenInterestBefore, shortOpenInterestAfter);
+        assertEq(balanceBefore + uint(collateral), balanceAfter);
     }
 
     function testDecreaseColShortPositionInIndex() public {
@@ -642,8 +804,13 @@ contract EthernalTest is Test {
             user0,
             false
         );
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint balanceBefore = weth.balanceOf(address(ethernal));
 
         ethernal.updatePosition(address(weth), collateral, size, false);
+
+        uint balanceAfter = weth.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
 
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
@@ -657,13 +824,19 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size, positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(shortOpenInterestBefore, shortOpenInterestAfter);
+        assertEq(balanceBefore - uint(-collateral), balanceAfter);
     }
     function testIncreaseSizeShortPositionInIndex() public {
         testOpenShortPositionInIndex();
 
         int collateral = 0;
         int size = int(mulPrice(1 ether, getPrice()));
-        uint fee = ethernal.getPositionFee(uint(size));
+        uint fee = divPrice(
+            ethernal.getPositionFee(uint(size)),
+            getPrice(),
+            10 ** 18
+        );
         mintWeth(user0, uint(fee));
 
         vm.startPrank(user0);
@@ -675,7 +848,13 @@ contract EthernalTest is Test {
             false
         );
 
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint balanceBefore = weth.balanceOf(address(ethernal));
+
         ethernal.updatePosition(address(weth), collateral, size, false);
+
+        uint balanceAfter = weth.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
 
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
@@ -686,18 +865,27 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size + uint(size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(shortOpenInterestBefore + uint(size), shortOpenInterestAfter);
+        assertEq(balanceBefore + fee, balanceAfter);
     }
     function testDecreaseSizeShortPositionInIndex() public {
         testOpenShortPositionInIndex();
 
         int collateral = 0;
         int size = -int(mulPrice(1 ether, getPrice()));
-        uint fee = ethernal.getPositionFee(uint(-size));
+        uint fee = divPrice(
+            ethernal.getPositionFee(uint(-size)),
+            getPrice(),
+            10 ** 18
+        );
         mintWeth(user0, uint(fee));
 
         vm.startPrank(user0);
 
         weth.approve(address(ethernal), uint(fee));
+
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint balanceBefore = weth.balanceOf(address(ethernal));
 
         Ethernal.Position memory positionBefore = ethernal.getPosition(
             user0,
@@ -705,6 +893,9 @@ contract EthernalTest is Test {
         );
 
         ethernal.updatePosition(address(weth), collateral, size, false);
+
+        uint balanceAfter = weth.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
 
         Ethernal.Position memory positionAfter = ethernal.getPosition(
             user0,
@@ -715,27 +906,65 @@ contract EthernalTest is Test {
         assertEq(positionBefore.size - uint(-size), positionAfter.size);
         assertEq(block.timestamp, positionAfter.lastTimeUpdated);
         assertEq(positionBefore.price, positionAfter.price);
+        assertEq(shortOpenInterestBefore - uint(-size), shortOpenInterestAfter);
+        assertEq(balanceBefore + fee, balanceAfter);
     }
 
     function testProfitableLongPositionInAsset() public {
         testOpenLongPositionInAsset();
-        vm.warp(block.timestamp + 7 days);
+        uint elapsedTime = 7 days;
+        vm.warp(block.timestamp + elapsedTime);
         int newPrice = 4000 * 10 ** 6;
         priceFeed.setPrice(newPrice);
 
-        vm.startPrank(user0);
-        uint balanceBefore = weth.balanceOf(user0);
-        ethernal.closePosition(true);
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint ethernalBalanceBefore = weth.balanceOf(address(ethernal));
+        Ethernal.Position memory positionBefore = ethernal.getPosition(
+            user0,
+            true
+        );
 
-        uint balanceAfter = weth.balanceOf(user0);
+        uint borrowingFees = ethernal.calculateBorrowingFee(
+            positionBefore.size,
+            elapsedTime
+        );
+
+        int pnl = ethernal.getPorLInAsset(
+            uint(newPrice),
+            positionBefore.price,
+            positionBefore.size
+        );
+
+        uint expectedBalanceInAsset = (uint(pnl) + positionBefore.collateral) -
+            borrowingFees;
+        uint expectedBalance = divPrice(
+            expectedBalanceInAsset,
+            getPrice(),
+            10 ** 18
+        );
+
+        vm.startPrank(user0);
+        ethernal.closePosition(true);
         vm.stopPrank();
 
+        uint userBalanceAfter = weth.balanceOf(user0);
+        uint ethernalBalanceAfter = weth.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
         Ethernal.Position memory position = ethernal.getPosition(user0, true);
-        assertTrue(balanceAfter > balanceBefore);
+
+        assertEq(expectedBalance, userBalanceAfter);
         assertEq(0, position.price);
         assertEq(0, position.size);
         assertEq(0, position.collateral);
         assertEq(0, position.lastTimeUpdated);
+        assertEq(
+            longOpenInterestBefore - positionBefore.size,
+            longOpenInterestAfter
+        );
+        assertEq(
+            ethernalBalanceBefore - userBalanceAfter,
+            ethernalBalanceAfter
+        );
     }
 
     function testLossLongPositionInAsset() public {
@@ -744,15 +973,35 @@ contract EthernalTest is Test {
         uint newPrice = 2000 * USDC_DECIMALS;
         priceFeed.setPrice(int(newPrice));
 
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint ethernalBalanceBefore = weth.balanceOf(address(ethernal));
+        Ethernal.Position memory positionBefore = ethernal.getPosition(
+            user0,
+            true
+        );
+
         vm.startPrank(user0);
         ethernal.closePosition(true);
-
-        uint balanceAfter = weth.balanceOf(user0);
         vm.stopPrank();
+
+        uint userBalanceAfter = weth.balanceOf(user0);
+        uint ethernalBalanceAfter = weth.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
 
         uint positionCollateral = ((100 * USDC_DECIMALS) * WETH_DECIMALS) /
             getPrice();
-        assertTrue(balanceAfter < positionCollateral);
+
+        Ethernal.Position memory position = ethernal.getPosition(user0, true);
+        assertTrue(userBalanceAfter < positionCollateral);
+        assertEq(0, position.price);
+        assertEq(0, position.size);
+        assertEq(0, position.collateral);
+        assertEq(0, position.lastTimeUpdated);
+        assertEq(
+            longOpenInterestBefore - positionBefore.size,
+            longOpenInterestAfter
+        );
+        assertEq(ethernalBalanceBefore, ethernalBalanceAfter);
     }
 
     function testLiquidateableLongPositionInAsset() public {
@@ -761,27 +1010,91 @@ contract EthernalTest is Test {
         uint newPrice = 2000 * USDC_DECIMALS;
         priceFeed.setPrice(int(newPrice));
 
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint ethernalBalanceBefore = weth.balanceOf(address(ethernal));
+        Ethernal.Position memory positionBefore = ethernal.getPosition(
+            user0,
+            true
+        );
+
         vm.startPrank(user0);
         ethernal.closePosition(true);
         vm.stopPrank();
-        uint balanceAfter = weth.balanceOf(user0);
-        assertEq(0, balanceAfter);
+
+        uint userBalanceAfter = weth.balanceOf(user0);
+        uint ethernalBalanceAfter = weth.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
+        Ethernal.Position memory position = ethernal.getPosition(user0, true);
+
+        assertEq(0, userBalanceAfter);
+        assertEq(0, position.price);
+        assertEq(0, position.size);
+        assertEq(0, position.collateral);
+        assertEq(0, position.lastTimeUpdated);
+        assertEq(
+            longOpenInterestBefore - positionBefore.size,
+            longOpenInterestAfter
+        );
+        assertEq(ethernalBalanceBefore, ethernalBalanceAfter);
     }
 
     function testProfitableLongPositionInIndex() public {
         testOpenLongPositionInIndex();
-        vm.warp(block.timestamp + 7 days);
+        uint elapsedTime = 7 days;
+        vm.warp(block.timestamp + elapsedTime);
         int newPrice = int(4000 * USDC_DECIMALS);
         priceFeed.setPrice(newPrice);
 
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint ethernalBalanceBefore = weth.balanceOf(address(ethernal));
+        Ethernal.Position memory positionBefore = ethernal.getPosition(
+            user0,
+            true
+        );
+
+        uint borrowingFees = ethernal.calculateBorrowingFee(
+            positionBefore.size,
+            elapsedTime
+        );
+
+        int pnl = ethernal.getPorLInAsset(
+            uint(newPrice),
+            positionBefore.price,
+            positionBefore.size
+        );
+
+        uint expectedBalanceInAsset = (uint(pnl) +
+            mulPrice(positionBefore.collateral, getPrice())) - borrowingFees;
+
+        uint expectedBalance = divPrice(
+            expectedBalanceInAsset,
+            getPrice(),
+            10 ** 18
+        );
+
         vm.startPrank(user0);
-        uint balanceBefore = weth.balanceOf(user0);
         ethernal.closePosition(true);
 
-        uint balanceAfter = weth.balanceOf(user0);
+        uint userBalanceAfter = weth.balanceOf(user0);
+        uint ethernalBalanceAfter = weth.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
+        Ethernal.Position memory position = ethernal.getPosition(user0, true);
+
         vm.stopPrank();
 
-        assertTrue(balanceAfter > balanceBefore);
+        assertEq(expectedBalance, userBalanceAfter);
+        assertEq(0, position.price);
+        assertEq(0, position.size);
+        assertEq(0, position.collateral);
+        assertEq(0, position.lastTimeUpdated);
+        assertEq(
+            longOpenInterestBefore - positionBefore.size,
+            longOpenInterestAfter
+        );
+        assertEq(
+            ethernalBalanceBefore - userBalanceAfter,
+            ethernalBalanceAfter
+        );
     }
 
     function testLossLongPositionInIndex() public {
@@ -791,56 +1104,135 @@ contract EthernalTest is Test {
         int newPrice = int(1000 * USDC_DECIMALS);
         priceFeed.setPrice(newPrice);
 
-        vm.startPrank(user0);
+        uint longOpenInterestBefore = ethernal.longOpenInterest();
+        uint ethernalBalanceBefore = weth.balanceOf(address(ethernal));
+        Ethernal.Position memory positionBefore = ethernal.getPosition(
+            user0,
+            true
+        );
 
+        vm.startPrank(user0);
         ethernal.closePosition(true);
+
+        uint userBalanceAfter = weth.balanceOf(user0);
+        uint ethernalBalanceAfter = weth.balanceOf(address(ethernal));
+        uint longOpenInterestAfter = ethernal.longOpenInterest();
         Ethernal.Position memory position = ethernal.getPosition(user0, true);
-        uint balance = weth.balanceOf(user0);
-        assertEq(0, balance);
+
+        assertEq(0, userBalanceAfter);
         assertEq(0, position.price);
         assertEq(0, position.size);
         assertEq(0, position.collateral);
         assertEq(0, position.lastTimeUpdated);
+        assertEq(
+            longOpenInterestBefore - positionBefore.size,
+            longOpenInterestAfter
+        );
+        assertEq(ethernalBalanceBefore, ethernalBalanceAfter);
     }
 
     function testProfitableShortPositionInAsset() public {
         testOpenShortPositionInAsset();
-        vm.warp(block.timestamp + 7 days);
+        uint elapsedTime = 7 days;
+        vm.warp(block.timestamp + elapsedTime);
         int newPrice = int(1_000 * USDC_DECIMALS);
         priceFeed.setPrice(newPrice);
 
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint ethernalBalanceBefore = usdc.balanceOf(address(ethernal));
+        Ethernal.Position memory positionBefore = ethernal.getPosition(
+            user0,
+            false
+        );
+
+        uint borrowingFees = ethernal.calculateBorrowingFee(
+            positionBefore.size,
+            elapsedTime
+        );
+
+        int pnl = ethernal.getPorLInAsset(
+            uint(newPrice),
+            positionBefore.price,
+            positionBefore.size
+        );
+
+        uint expectedBalanceInAsset = (uint(-pnl) + positionBefore.collateral) -
+            borrowingFees;
+
         vm.startPrank(user0);
-        uint balanceBefore = usdc.balanceOf(user0);
         ethernal.closePosition(false);
-        uint balanceAfter = usdc.balanceOf(user0);
         vm.stopPrank();
 
+        uint userBalanceAfter = usdc.balanceOf(user0);
+        uint ethernalBalanceAfter = usdc.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
         Ethernal.Position memory position = ethernal.getPosition(user0, false);
-        assertTrue(balanceAfter > balanceBefore);
+
+        assertEq(expectedBalanceInAsset, userBalanceAfter);
         assertEq(0, position.price);
         assertEq(0, position.size);
         assertEq(0, position.collateral);
         assertEq(0, position.lastTimeUpdated);
+        assertEq(
+            shortOpenInterestBefore - positionBefore.size,
+            shortOpenInterestAfter
+        );
+        assertEq(
+            ethernalBalanceBefore - userBalanceAfter,
+            ethernalBalanceAfter
+        );
     }
 
     function testProfitableShortPositionInIndex() public {
         testOpenShortPositionInIndex();
-        vm.warp(block.timestamp + 2 days);
+        uint elapsedTime = 7 days;
+        vm.warp(block.timestamp + elapsedTime);
         int newPrice = int(1_000 * USDC_DECIMALS);
         priceFeed.setPrice(newPrice);
 
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint ethernalBalanceBefore = usdc.balanceOf(address(ethernal));
+        Ethernal.Position memory positionBefore = ethernal.getPosition(
+            user0,
+            false
+        );
+
+        uint borrowingFees = ethernal.calculateBorrowingFee(
+            positionBefore.size,
+            elapsedTime
+        );
+
+        int pnl = ethernal.getPorLInAsset(
+            uint(newPrice),
+            positionBefore.price,
+            positionBefore.size
+        );
+
+        uint expectedBalanceInAsset = (uint(-pnl) +
+            mulPrice(positionBefore.collateral, getPrice())) - borrowingFees;
+
         vm.startPrank(user0);
-        uint balanceBefore = usdc.balanceOf(user0);
         ethernal.closePosition(false);
-        uint balanceAfter = usdc.balanceOf(user0);
         vm.stopPrank();
 
+        uint userBalanceAfter = usdc.balanceOf(user0);
+        uint ethernalBalanceAfter = usdc.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
         Ethernal.Position memory position = ethernal.getPosition(user0, false);
-        assertTrue(balanceAfter > balanceBefore);
+
+        assertEq(expectedBalanceInAsset, userBalanceAfter);
         assertEq(0, position.price);
         assertEq(0, position.size);
         assertEq(0, position.collateral);
         assertEq(0, position.lastTimeUpdated);
+        assertEq(
+            shortOpenInterestBefore - positionBefore.size,
+            shortOpenInterestAfter
+        );
+        assertEq(
+            ethernalBalanceBefore - userBalanceAfter,
+            ethernalBalanceAfter
+        );
     }
 
     function testLossShortPositionInAsset() public {
@@ -849,16 +1241,33 @@ contract EthernalTest is Test {
         int newPrice = int(4_000 * USDC_DECIMALS);
         priceFeed.setPrice(newPrice);
 
+        uint userBalanceBefore = mulPrice(1 ether, getPrice());
+        uint shortOpenInterestBefore = ethernal.shortOpenInterest();
+        uint ethernalBalanceBefore = usdc.balanceOf(address(ethernal));
+        Ethernal.Position memory positionBefore = ethernal.getPosition(
+            user0,
+            false
+        );
+
         vm.startPrank(user0);
         ethernal.closePosition(false);
         vm.stopPrank();
+
+        uint userBalanceAfter = usdc.balanceOf(user0);
+        uint ethernalBalanceAfter = usdc.balanceOf(address(ethernal));
+        uint shortOpenInterestAfter = ethernal.shortOpenInterest();
         Ethernal.Position memory position = ethernal.getPosition(user0, false);
-        uint balance = usdc.balanceOf(user0);
-        assertEq(0, balance);
+
+        assertEq(0, userBalanceAfter);
         assertEq(0, position.price);
         assertEq(0, position.size);
         assertEq(0, position.collateral);
         assertEq(0, position.lastTimeUpdated);
+        assertEq(
+            shortOpenInterestBefore - positionBefore.size,
+            shortOpenInterestAfter
+        );
+        assertEq(ethernalBalanceBefore, ethernalBalanceAfter);
     }
 
     function testLiquidateLongPositionInAsset() public {
@@ -978,12 +1387,25 @@ contract EthernalTest is Test {
         assertEq(expectedFee, liquidatorBalance);
     }
 
-    function testCalcBorrowFees() public {
+    function testCalcBorrowFees() public view {
         uint borrowAmount = 100 * USDC_DECIMALS;
         uint expectedFee = 10 * USDC_DECIMALS;
         uint elapsedTime = 365 days + 1;
         uint fee = ethernal.calculateBorrowingFee(elapsedTime, borrowAmount);
         assertEq(expectedFee, fee);
+    }
+    function testGetPorL() public view {
+        uint posPrice = 1_000 * USDC_DECIMALS;
+        uint currentPrice = 2_000 * USDC_DECIMALS;
+        uint posSize = 10_000 * USDC_DECIMALS;
+        uint posSizeInIndex = (posSize / posPrice) * WETH_DECIMALS;
+        int priceDelta = int(currentPrice) - int(posPrice);
+        int expectedPnl = (int(posSizeInIndex) * priceDelta) /
+            int(WETH_DECIMALS);
+
+        int pOrL = ethernal.getPorLInAsset(currentPrice, posPrice, posSize);
+
+        assertEq(expectedPnl, pOrL);
     }
 
     function getPrice() public view returns (uint256) {

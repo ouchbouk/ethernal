@@ -1,2 +1,2 @@
 #!/bin/bash
-forge test --mt testLiquidateShortPositionInIndex -vvv
+forge test --mt testProfitableShortPositionInIndex -vvv

@@ -8,7 +8,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IPriceFeed} from "./interfaces/IPrice.sol";
 import {IEthernal} from "./interfaces/IEthernal.sol";
 
-// import "forge-std/console.sol";
+import "forge-std/console.sol";
 
 error InvalidLeverage();
 error NotEnoughAssets();
@@ -21,28 +21,30 @@ error NotEnoughReserves();
 error Slippage();
 
 contract Ethernal is IEthernal, ERC20 {
-    uint256 totalAssetLiquidity;
-    uint256 totalIndexLiquidity;
+    uint public totalAssetLiquidity;
+    uint public totalIndexLiquidity;
 
-    uint256 shortOpenInterest;
-    uint256 longOpenInterest;
+    uint public shortOpenInterest;
+    uint public longOpenInterest;
 
     mapping(address => Position) shortPositions;
     mapping(address => Position) longPositions;
 
-    uint256 constant MAX_LEVERAGE = 15 * SCALE_FACTOR;
-    uint256 constant MAX_UTILIZATION = 8_000; // 80%
-    uint256 constant MAX_BASIS_POINTS = 10_000; // 100%
-    uint256 constant POSITION_FEE = 30; // 0.3%
-    uint256 constant LIQUIDATOR_FEE = 1_000; // 10%
-    uint256 constant BORROWING_RATE_PER_YEAR = 1_000; // 10%
-    uint256 constant SCALE_FACTOR = 1e18;
-    uint constant BORROW_FEE_SCALE = 1e30;
-    address immutable priceFeed;
+    uint constant MAX_LEVERAGE = 15 * SCALE_FACTOR;
+    uint constant MAX_UTILIZATION = 8_000; // 80%
+    uint constant MAX_BASIS_POINTS = 10_000; // 100%
+    uint constant POSITION_FEE = 30; // 0.3%
+    uint constant LIQUIDATOR_FEE = 1_000; // 10%
 
+    uint constant SCALE_FACTOR = 1e18;
+    uint constant BORROW_FEE_SCALE = 1e30;
+
+    address immutable priceFeed;
     address immutable asset;
     address immutable indexToken;
-    uint256 public immutable borrowingRatePerSecond; // decimals 30
+    uint public immutable borrowingRatePerSecond; // decimals 30
+
+    // uint  constant BORROWING_RATE_PER_YEAR = 1_000; // 10%
 
     modifier onlySupportedTokens(address token) {
         if (token != asset && token != indexToken) revert UnsupportedToken();
@@ -52,22 +54,25 @@ contract Ethernal is IEthernal, ERC20 {
     constructor(
         address asset_,
         address indexToken_,
-        address priceFeed_
+        address priceFeed_,
+        uint borrowingRatePerYear
     ) ERC20("Ethernal VT", "ETHNAL") {
         asset = asset_;
         indexToken = indexToken_;
         priceFeed = priceFeed_;
         borrowingRatePerSecond =
-            ((BORROW_FEE_SCALE * BORROWING_RATE_PER_YEAR) / MAX_BASIS_POINTS) /
+            ((BORROW_FEE_SCALE * borrowingRatePerYear) / MAX_BASIS_POINTS) /
             31_536_000; // seconds per year;
     }
 
     function addLiquidity(
         address token,
-        uint256 amount,
+        uint amount,
         uint minLp
     ) external onlySupportedTokens(token) {
+        uint liquidityAmount = amount;
         _transferTokensIn(token, msg.sender, amount);
+
         if (token == indexToken) {
             amount = _mulPrice(amount, getPrice());
         }
@@ -75,31 +80,31 @@ contract Ethernal is IEthernal, ERC20 {
         uint mintAmount = previewDeposit(amount);
 
         if (mintAmount < minLp) revert UndesirableLpAmount();
+        _updateLiquidity(token, int(liquidityAmount));
         _mint(msg.sender, mintAmount);
-
-        _updateLiquidity(token, int(amount));
     }
 
-    function _updateLiquidity(address token, int256 amount) internal {
+    function _updateLiquidity(address token, int amount) internal {
         if (token == indexToken) {
             amount < 0
-                ? totalIndexLiquidity -= uint256(-amount)
+                ? totalIndexLiquidity -= uint(-amount)
                 : totalIndexLiquidity += uint(amount);
         } else {
             amount < 0
-                ? totalAssetLiquidity -= uint256(-amount)
+                ? totalAssetLiquidity -= uint(-amount)
                 : totalAssetLiquidity += uint(amount);
         }
     }
 
     function removeLiquidity(
         address tokenOut,
-        uint256 lpAmount,
-        uint256 minAmount
+        uint lpAmount,
+        uint minAmount
     ) external onlySupportedTokens(tokenOut) {
         uint amount = previewRedeem(lpAmount);
+
         if (tokenOut == indexToken) {
-            uint256 price = getPrice();
+            uint price = getPrice();
             amount = _divPrice(amount, price);
         }
 
@@ -116,7 +121,7 @@ contract Ethernal is IEthernal, ERC20 {
         address token,
         uint amount
     ) internal view returns (bool) {
-        uint256 balance = ERC20(token).balanceOf(address(this));
+        uint balance = ERC20(token).balanceOf(address(this));
         uint openInterest = token == indexToken
             ? longOpenInterest
             : shortOpenInterest;
@@ -124,27 +129,27 @@ contract Ethernal is IEthernal, ERC20 {
         return (amount <= balance && (balance - amount) >= openInterest);
     }
 
-    function previewRedeem(uint lpAmount) public view returns (uint256) {
-        uint256 totalSupply_ = totalSupply();
+    function previewRedeem(uint lpAmount) public view returns (uint) {
+        uint totalSupply_ = totalSupply();
 
         return
             totalSupply_ == 0
                 ? lpAmount
-                : lpAmount * (totalAssets() / totalSupply_);
+                : (lpAmount * totalAssets()) / totalSupply_;
     }
 
-    function previewDeposit(uint amount) public view returns (uint256) {
-        uint256 totalAssets_ = totalAssets();
+    function previewDeposit(uint amount) public view returns (uint) {
+        uint totalAssets_ = totalAssets();
         return
             totalAssets_ == 0
                 ? amount
-                : ((amount * totalSupply()) / totalAssets_);
+                : (amount * totalSupply()) / totalAssets_;
     }
 
     function updatePosition(
         address collateralToken,
-        int256 amount,
-        int256 size,
+        int amount,
+        int size,
         bool isLong
     ) public onlySupportedTokens(collateralToken) {
         if (amount == 0 && size == 0) revert ZeroAmount(); // @audit ?????
@@ -161,8 +166,8 @@ contract Ethernal is IEthernal, ERC20 {
         }
 
         amount < 0
-            ? position.collateral -= uint256(-amount)
-            : position.collateral += uint256(amount);
+            ? position.collateral -= uint(-amount)
+            : position.collateral += uint(amount);
 
         size < 0 ? position.size -= uint(-size) : position.size += uint(size);
 
@@ -178,12 +183,13 @@ contract Ethernal is IEthernal, ERC20 {
         if (!_isEnoughAssets(position.size, position.colInIndex))
             revert NotEnoughAssets();
 
-        if (size > 0) {
-            uint256 fee = getPositionFee(abs(size));
+        if (size != 0) {
+            uint fee = getPositionFee(_abs(size));
+
             _transferTokensIn(
                 position.colInIndex ? indexToken : asset,
                 msg.sender,
-                fee
+                position.colInIndex ? _divPrice(fee, getPrice()) : fee
             );
         }
 
@@ -191,7 +197,7 @@ contract Ethernal is IEthernal, ERC20 {
             _transferTokensIn(
                 position.colInIndex ? indexToken : asset,
                 msg.sender,
-                uint256(amount)
+                uint(amount)
             );
         else if (amount < 0) {
             _transferTokensOut(
@@ -203,7 +209,6 @@ contract Ethernal is IEthernal, ERC20 {
 
         uint sizeChange = size < 0 ? uint(-size) : uint(size);
 
-        // update storage
         if (isLong) {
             longPositions[msg.sender] = position;
 
@@ -247,11 +252,11 @@ contract Ethernal is IEthernal, ERC20 {
         }
     }
 
-    function abs(int value) internal pure returns (uint) {
+    function _abs(int value) internal pure returns (uint) {
         return value >= 0 ? uint(value) : uint(-value);
     }
 
-    function closePosition(bool isLong) public {
+    function closePosition(bool isLong) external {
         Position storage position = _getPosition(msg.sender, isLong);
         accrueAccount(msg.sender, isLong);
 
@@ -260,7 +265,7 @@ contract Ethernal is IEthernal, ERC20 {
             _liquidate(msg.sender, isLong);
             return;
         } else {
-            int256 profit = getPorLInAsset(
+            int profit = getPorLInAsset(
                 getPrice(),
                 position.price,
                 position.size
@@ -269,6 +274,7 @@ contract Ethernal is IEthernal, ERC20 {
             uint total;
             uint collateral = position.collateral;
             bool colInIndex = position.colInIndex;
+
             if (isLong) {
                 uint profitInIndex = _divPrice(uint(profit), getPrice());
                 total += profitInIndex;
@@ -294,14 +300,14 @@ contract Ethernal is IEthernal, ERC20 {
         }
     }
 
-    function getPositionFee(uint256 size) public pure returns (uint256) {
+    function getPositionFee(uint size) public pure returns (uint) {
         return (size / MAX_BASIS_POINTS) * POSITION_FEE;
     }
 
     function calculateBorrowingFee(
         uint size,
         uint elapsedTime
-    ) public view returns (uint256) {
+    ) public view returns (uint) {
         uint borrowFeeScaled = size * elapsedTime * borrowingRatePerSecond;
         return borrowFeeScaled / BORROW_FEE_SCALE;
     }
@@ -349,16 +355,16 @@ contract Ethernal is IEthernal, ERC20 {
     }
 
     function getPorLInAsset(
-        uint256 currentPrice,
-        uint256 positionPrice,
-        uint256 size
-    ) public view returns (int256) {
-        int priceChange = int(currentPrice) - int(positionPrice);
+        uint currentPrice,
+        uint positionPrice,
+        uint size
+    ) public view returns (int) {
+        int priceDelta = int(currentPrice) - int(positionPrice);
 
         uint sizeInIndex = _divPrice(size, positionPrice);
 
         return
-            (priceChange * int(sizeInIndex)) /
+            (priceDelta * int(sizeInIndex)) /
             int(10 ** ERC20(indexToken).decimals());
     }
 
@@ -408,7 +414,7 @@ contract Ethernal is IEthernal, ERC20 {
                 loss = _divPrice(loss, getPrice());
             }
             if (position_.collateral >= loss) {
-                longPositions[account].collateral -= loss;
+                position.collateral -= loss;
             } else {
                 _resetPositionAndUpdateSize(position, isLong);
             }
@@ -420,7 +426,7 @@ contract Ethernal is IEthernal, ERC20 {
             }
 
             if (position_.collateral >= loss) {
-                shortPositions[account].collateral -= loss;
+                position.collateral -= loss;
             } else {
                 _resetPositionAndUpdateSize(position, isLong);
             }
@@ -428,24 +434,24 @@ contract Ethernal is IEthernal, ERC20 {
     }
 
     function getLeverage(
-        uint256 collateral,
-        uint256 size
-    ) public pure returns (uint256) {
+        uint collateral,
+        uint size
+    ) public pure returns (uint) {
         if (size == 0 || collateral == 0) revert ZeroAmount();
         return (size * SCALE_FACTOR) / collateral;
     }
 
-    function isValidLeverage(uint256 leverage) public pure returns (bool) {
+    function isValidLeverage(uint leverage) public pure returns (bool) {
         return leverage <= MAX_LEVERAGE;
     }
 
     function _isEnoughAssets(
-        uint256 size,
+        uint size,
         bool colInIndex
     ) internal view returns (bool) {
-        uint256 totalAssets_ = totalAssets();
+        uint totalAssets_ = totalAssets();
 
-        uint256 availableAssets = (totalAssets_ / MAX_BASIS_POINTS) *
+        uint availableAssets = (totalAssets_ / MAX_BASIS_POINTS) *
             MAX_UTILIZATION;
 
         if (colInIndex) {
@@ -455,7 +461,7 @@ contract Ethernal is IEthernal, ERC20 {
         return size + longOpenInterest + shortOpenInterest <= availableAssets;
     }
 
-    function totalAssets() public view returns (uint256) {
+    function totalAssets() public view returns (uint) {
         return totalAssetLiquidity + _mulPrice(totalIndexLiquidity, getPrice());
     }
 
@@ -465,6 +471,11 @@ contract Ethernal is IEthernal, ERC20 {
     ) public view returns (Position memory) {
         return isLong ? longPositions[account] : shortPositions[account];
     }
+    function getPrice() public view returns (uint) {
+        (, int price, , , ) = IPriceFeed(priceFeed).latestRoundData();
+        if (price <= 0) revert BadPrice();
+        return uint(price);
+    }
 
     function _getPosition(
         address account,
@@ -473,27 +484,18 @@ contract Ethernal is IEthernal, ERC20 {
         return isLong ? longPositions[account] : shortPositions[account];
     }
 
-    function getPrice() public view returns (uint256) {
-        (, int256 price, , , ) = IPriceFeed(priceFeed).latestRoundData();
-        if (price <= 0) revert BadPrice();
-        return uint256(price);
-    }
-
-    function _mulPrice(
-        uint256 amount,
-        uint256 price
-    ) internal view returns (uint256) {
+    function _mulPrice(uint amount, uint price) internal view returns (uint) {
         return (amount * price) / 10 ** ERC20(indexToken).decimals();
     }
 
-    function _divPrice(uint n, uint price) internal view returns (uint) {
-        return (n * 10 ** ERC20(indexToken).decimals()) / price;
+    function _divPrice(uint amount, uint price) internal view returns (uint) {
+        return (amount * 10 ** ERC20(indexToken).decimals()) / price;
     }
 
     function _transferTokensIn(
         address token,
         address from,
-        uint256 amount
+        uint amount
     ) internal {
         SafeERC20.safeTransferFrom(IERC20(token), from, address(this), amount);
     }
