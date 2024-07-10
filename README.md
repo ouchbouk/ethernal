@@ -1,4 +1,4 @@
-# Ethernal Solidity Smart Contract
+# Ethernal
 
 ## Overview
 
@@ -15,6 +15,26 @@ To use this contract, you need to have Solidity and OpenZeppelin Contracts insta
 
 ```sh
 npm install @openzeppelin/contracts
+```
+
+## Usage
+
+### Build
+
+```shell
+$ forge build
+```
+
+### Test
+
+```shell
+$ forge test
+```
+
+### Format
+
+```shell
+$ forge fmt
 ```
 
 ## Contract Components
