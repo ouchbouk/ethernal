@@ -44,8 +44,6 @@ contract Ethernal is IEthernal, ERC20 {
     address immutable indexToken;
     uint public immutable borrowingRatePerSecond; // decimals 30
 
-    // uint  constant BORROWING_RATE_PER_YEAR = 1_000; // 10%
-
     modifier onlySupportedTokens(address token) {
         if (token != asset && token != indexToken) revert UnsupportedToken();
         _;
@@ -82,6 +80,8 @@ contract Ethernal is IEthernal, ERC20 {
         if (mintAmount < minLp) revert UndesirableLpAmount();
         _updateLiquidity(token, int(liquidityAmount));
         _mint(msg.sender, mintAmount);
+
+        emit AddLiquidity(msg.sender, token, amount);
     }
 
     function _updateLiquidity(address token, int amount) internal {
@@ -110,11 +110,12 @@ contract Ethernal is IEthernal, ERC20 {
 
         if (amount < minAmount) revert Slippage();
         if (!_isValidWithdrawal(tokenOut, amount)) revert NotEnoughReserves();
-        // what if no m0ny?
         _transferTokensOut(tokenOut, msg.sender, amount);
         _burn(msg.sender, lpAmount);
 
         _updateLiquidity(tokenOut, -int(amount));
+
+        emit RemoveLiquidity(msg.sender, tokenOut, amount);
     }
 
     function _isValidWithdrawal(
@@ -226,6 +227,8 @@ contract Ethernal is IEthernal, ERC20 {
                 shortOpenInterest -= sizeChange;
             }
         }
+
+        emit UpdatePosition(msg.sender, isLong, size, amount);
     }
 
     function _accrueBorrowingFees(address account, bool isLong) internal {
@@ -259,6 +262,8 @@ contract Ethernal is IEthernal, ERC20 {
     function closePosition(bool isLong) external {
         Position storage position = _getPosition(msg.sender, isLong);
         accrueAccount(msg.sender, isLong);
+
+        emit ClosePosition(msg.sender, isLong);
 
         if (position.collateral == 0) return;
         if (isLiquidateable(msg.sender, isLong)) {
@@ -348,6 +353,8 @@ contract Ethernal is IEthernal, ERC20 {
         );
 
         _resetPositionAndUpdateSize(position, isLong);
+
+        emit LiquidatePosition(msg.sender, account, liquidatorFee);
     }
 
     function getLiquidationFee(uint collateral) public pure returns (uint) {

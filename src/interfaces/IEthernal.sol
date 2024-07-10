@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 interface IEthernal {
-
     struct Position {
         uint256 collateral;
         bool colInIndex;
@@ -15,7 +14,11 @@ interface IEthernal {
     /// @param user User depositing liquidity
     /// @param token Token address
     /// @param amount Amount deposited
-    event AddLiquidity(address indexed user, uint indexed token, uint amount);
+    event AddLiquidity(
+        address indexed user,
+        address indexed token,
+        uint amount
+    );
 
     /// @notice Emitted when liquidity is removed
     /// @dev Explain to a developer any extra details
@@ -24,7 +27,7 @@ interface IEthernal {
     /// @param amount Amount removed
     event RemoveLiquidity(
         address indexed user,
-        uint indexed token,
+        address indexed token,
         uint amount
     );
     event UpdatePosition(
