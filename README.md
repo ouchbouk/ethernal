@@ -27,7 +27,6 @@ npm install @openzeppelin/contracts
 - `SafeERC20` from OpenZeppelin: Safe operations for ERC20.
 - `IPriceFeed`: Interface for fetching price data.
 - `IEthernal`: Interface for the Ethernal contract.
-- `forge-std/console.sol`: For debugging purposes.
 
 ### Errors
 

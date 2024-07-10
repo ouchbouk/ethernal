@@ -8,7 +8,6 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IPriceFeed} from "./interfaces/IPrice.sol";
 import {IEthernal} from "./interfaces/IEthernal.sol";
 
-import "forge-std/console.sol";
 
 error InvalidLeverage();
 error NotEnoughAssets();
