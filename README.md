@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Ethernal contract is a Solidity-based smart contract implementing a decentralized finance (DeFi) protocol for managing liquidity and leveraging positions on Ethereum. It includes features for adding/removing liquidity, managing long and short positions, and handling fees and liquidations.
+Ethernal is DeFi perpetuals protocol that allows managing liquidity and leveraging positions on Ethereum. It includes features for adding/removing liquidity, managing long and short positions, and handling fees and liquidations.
 
 ## Prerequisites
 

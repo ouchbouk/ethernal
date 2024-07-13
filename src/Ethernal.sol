@@ -56,6 +56,9 @@ contract Ethernal is IEthernal, ERC20 {
         borrowingRatePerSecond = ((BORROW_FEE_SCALE * borrowingRatePerYear) / MAX_BASIS_POINTS) / 31_536_000; // seconds per year;
     }
 
+    /**
+     * @dev See {IEthernal-addLiquidity}.
+     */
     function addLiquidity(address token, uint256 amount, uint256 minLp) external onlySupportedTokens(token) {
         uint256 liquidityAmount = amount;
         _transferTokensIn(token, msg.sender, amount);
@@ -73,6 +76,9 @@ contract Ethernal is IEthernal, ERC20 {
         emit AddLiquidity(msg.sender, token, amount);
     }
 
+    /**
+     * @dev See Updates the total liquidity for the token.
+     */
     function _updateLiquidity(address token, int256 amount) internal {
         if (token == indexToken) {
             amount < 0 ? totalIndexLiquidity -= uint256(-amount) : totalIndexLiquidity += uint256(amount);
@@ -81,6 +87,9 @@ contract Ethernal is IEthernal, ERC20 {
         }
     }
 
+    /**
+     * @dev See {IEthernal-removeLiquidity}.
+     */
     function removeLiquidity(address tokenOut, uint256 lpAmount, uint256 minAmount)
         external
         onlySupportedTokens(tokenOut)
@@ -102,6 +111,9 @@ contract Ethernal is IEthernal, ERC20 {
         emit RemoveLiquidity(msg.sender, tokenOut, amount);
     }
 
+    /**
+     * @dev Checks if the withdrawal is valid.
+     */
     function _isValidWithdrawal(address token, uint256 amount) internal view returns (bool) {
         uint256 balance = ERC20(token).balanceOf(address(this));
         uint256 openInterest = token == indexToken ? longOpenInterest : shortOpenInterest;
@@ -109,22 +121,31 @@ contract Ethernal is IEthernal, ERC20 {
         return (amount <= balance && (balance - amount) >= openInterest);
     }
 
+    /**
+     * @dev See {IEthernal-previewRedeem}.
+     */
     function previewRedeem(uint256 lpAmount) public view returns (uint256) {
         uint256 totalSupply_ = totalSupply();
 
         return totalSupply_ == 0 ? lpAmount : (lpAmount * totalAssets()) / totalSupply_;
     }
 
+    /**
+     * @dev See {IEthernal-previewDeposit}.
+     */
     function previewDeposit(uint256 amount) public view returns (uint256) {
         uint256 totalAssets_ = totalAssets();
         return totalAssets_ == 0 ? amount : (amount * totalSupply()) / totalAssets_;
     }
 
+    /**
+     * @dev See {IEthernal-updatePosition}.
+     */
     function updatePosition(address collateralToken, int256 amount, int256 size, bool isLong)
         public
         onlySupportedTokens(collateralToken)
     {
-        if (amount == 0 && size == 0) revert ZeroAmount(); // @audit ?????
+        if (amount == 0 && size == 0) revert ZeroAmount();
         Position memory position = isLong ? longPositions[msg.sender] : shortPositions[msg.sender];
 
         if (position.price == 0) {
@@ -188,6 +209,9 @@ contract Ethernal is IEthernal, ERC20 {
         emit UpdatePosition(msg.sender, isLong, size, amount);
     }
 
+    /**
+     * @dev Accrues borrowing fees for an account.
+     */
     function _accrueBorrowingFees(address account, bool isLong) internal {
         Position memory position_ = getPosition(account, isLong);
         if (position_.lastTimeUpdated == 0 || position_.lastTimeUpdated == block.timestamp) return;
@@ -209,10 +233,16 @@ contract Ethernal is IEthernal, ERC20 {
         }
     }
 
+    /**
+     * @dev Returns absolute the value for an int
+     */
     function _abs(int256 value) internal pure returns (uint256) {
         return value >= 0 ? uint256(value) : uint256(-value);
     }
 
+    /**
+     * @dev See {IEthernal-closePosition}.
+     */
     function closePosition(bool isLong) external {
         Position storage position = _getPosition(msg.sender, isLong);
         accrueAccount(msg.sender, isLong);
@@ -255,25 +285,40 @@ contract Ethernal is IEthernal, ERC20 {
         }
     }
 
+    /**
+     * @dev See {IEthernal-getPositionFee}.
+     */
     function getPositionFee(uint256 size) public pure returns (uint256) {
         return (size / MAX_BASIS_POINTS) * POSITION_FEE;
     }
 
+    /**
+     * @dev See {IEthernal-calculateBorrowingFee}.
+     */
     function calculateBorrowingFee(uint256 size, uint256 elapsedTime) public view returns (uint256) {
         uint256 borrowFeeScaled = size * elapsedTime * borrowingRatePerSecond;
         return borrowFeeScaled / BORROW_FEE_SCALE;
     }
 
+    /**
+     * @dev See {IEthernal-accrueAccount}.
+     */
     function accrueAccount(address account, bool isLong) public {
         _accrueBorrowingFees(account, isLong);
         _accrueLoss(account, isLong);
     }
 
+    /**
+     * @dev See {IEthernal-liquidate}.
+     */
     function liquidate(address account, bool isLong) public {
         accrueAccount(account, isLong);
         _liquidate(account, isLong);
     }
 
+    /**
+     * @dev Liquidates an account's position.
+     */
     function _liquidate(address account, bool isLong) internal {
         Position storage position = _getPosition(account, isLong);
         if (position.collateral == 0) return;
@@ -296,10 +341,16 @@ contract Ethernal is IEthernal, ERC20 {
         emit LiquidatePosition(msg.sender, account, liquidatorFee);
     }
 
+    /**
+     * @dev See {IEthernal-getLiquidationFee}.
+     */
     function getLiquidationFee(uint256 collateral) public pure returns (uint256) {
         return (collateral * LIQUIDATOR_FEE) / MAX_BASIS_POINTS;
     }
 
+    /**
+     * @dev See {IEthernal-getPorLInAsset}.
+     */
     function getPorLInAsset(uint256 currentPrice, uint256 positionPrice, uint256 size) public view returns (int256) {
         int256 priceDelta = int256(currentPrice) - int256(positionPrice);
 
@@ -308,6 +359,9 @@ contract Ethernal is IEthernal, ERC20 {
         return (priceDelta * int256(sizeInIndex)) / int256(10 ** ERC20(indexToken).decimals());
     }
 
+    /**
+     * @dev Resets a position and updates the size.
+     */
     function _resetPositionAndUpdateSize(Position storage position, bool isLong) internal {
         isLong ? longOpenInterest -= position.size : shortOpenInterest -= position.size;
         position.collateral = 0;
@@ -316,6 +370,9 @@ contract Ethernal is IEthernal, ERC20 {
         position.lastTimeUpdated = 0;
     }
 
+    /**
+     * @dev See {IEthernal-isLiquidateable}.
+     */
     function isLiquidateable(address account, bool isLong) public view returns (bool) {
         Position memory position = getPosition(account, isLong);
         return getLeverage(
@@ -323,6 +380,9 @@ contract Ethernal is IEthernal, ERC20 {
         ) > MAX_LEVERAGE;
     }
 
+    /**
+     * @dev Accrues losses for an account.
+     */
     function _accrueLoss(address account, bool isLong) internal {
         Position storage position = _getPosition(account, isLong);
         Position memory position_ = position;
@@ -357,15 +417,24 @@ contract Ethernal is IEthernal, ERC20 {
         }
     }
 
+    /**
+     * @dev See {IEthernal-getLeverage}.
+     */
     function getLeverage(uint256 collateral, uint256 size) public pure returns (uint256) {
         if (size == 0 || collateral == 0) revert ZeroAmount();
         return (size * SCALE_FACTOR) / collateral;
     }
 
+    /**
+     * @dev See {IEthernal-isValidLeverage}.
+     */
     function isValidLeverage(uint256 leverage) public pure returns (bool) {
         return leverage <= MAX_LEVERAGE;
     }
 
+    /**
+     * @dev Checks if there are enough assets.
+     */
     function _isEnoughAssets(uint256 size, bool colInIndex) internal view returns (bool) {
         uint256 totalAssets_ = totalAssets();
 
@@ -378,36 +447,60 @@ contract Ethernal is IEthernal, ERC20 {
         return size + longOpenInterest + shortOpenInterest <= availableAssets;
     }
 
+    /**
+     * @dev See {IEthernal-totalAssets}.
+     */
     function totalAssets() public view returns (uint256) {
         return totalAssetLiquidity + _mulPrice(totalIndexLiquidity, getPrice());
     }
 
+    /**
+     * @dev See {IEthernal-getPosition}.
+     */
     function getPosition(address account, bool isLong) public view returns (Position memory) {
         return isLong ? longPositions[account] : shortPositions[account];
     }
 
+    /**
+     * @dev See {IEthernal-getPrice}.
+     */
     function getPrice() public view returns (uint256) {
         (, int256 price,,,) = IPriceFeed(priceFeed).latestRoundData();
         if (price <= 0) revert BadPrice();
         return uint256(price);
     }
 
+    /**
+     * @dev Retrieves a user's position.
+     */
     function _getPosition(address account, bool isLong) internal view returns (Position storage) {
         return isLong ? longPositions[account] : shortPositions[account];
     }
 
+    /**
+     * @dev  Multiplies amount by price.
+     */
     function _mulPrice(uint256 amount, uint256 price) internal view returns (uint256) {
         return (amount * price) / 10 ** ERC20(indexToken).decimals();
     }
 
+    /**
+     * @dev Divides amount by price.
+     */
     function _divPrice(uint256 amount, uint256 price) internal view returns (uint256) {
         return (amount * 10 ** ERC20(indexToken).decimals()) / price;
     }
 
+    /**
+     * @dev Transfers tokens into the contract.
+     */
     function _transferTokensIn(address token, address from, uint256 amount) internal {
         SafeERC20.safeTransferFrom(IERC20(token), from, address(this), amount);
     }
 
+    /**
+     * @dev Transfers tokens out of the contract.
+     */
     function _transferTokensOut(address token, address to, uint256 amount) internal {
         SafeERC20.safeTransfer(IERC20(token), to, amount);
     }
