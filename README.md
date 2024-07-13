@@ -14,7 +14,7 @@ Ethernal is DeFi perpetuals protocol that allows managing liquidity and leveragi
 To use this contract, you need to have Solidity and OpenZeppelin Contracts installed. You can install OpenZeppelin Contracts using npm:
 
 ```sh
-npm install @openzeppelin/contracts
+forge install OpenZeppelin/openzeppelin-contracts
 ```
 
 ## Usage
